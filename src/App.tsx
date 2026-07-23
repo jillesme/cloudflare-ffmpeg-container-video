@@ -1,147 +1,176 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import cloudflareLogo from './assets/cloudflare.svg'
-import heroImg from './assets/hero.png'
+import { useEffect, useState } from 'react'
+import type { ChangeEvent, FormEvent } from 'react'
 import './App.css'
 
+const MAX_FILE_BYTES = 10 * 1024 * 1024
+const SUPPORTED_TYPES = new Set(['image/jpeg', 'image/png'])
+
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MiB`
+}
+
 function App() {
-  const [count, setCount] = useState(0)
-  const [name, setName] = useState('unknown')
+  const [file, setFile] = useState<File | null>(null)
+  const [originalUrl, setOriginalUrl] = useState<string | null>(null)
+  const [convertedUrl, setConvertedUrl] = useState<string | null>(null)
+  const [convertedSize, setConvertedSize] = useState<number | null>(null)
+  const [elapsed, setElapsed] = useState<number | null>(null)
+  const [error, setError] = useState('')
+  const [isConverting, setIsConverting] = useState(false)
+
+  useEffect(() => {
+    return () => {
+      if (originalUrl) URL.revokeObjectURL(originalUrl)
+    }
+  }, [originalUrl])
+
+  useEffect(() => {
+    return () => {
+      if (convertedUrl) URL.revokeObjectURL(convertedUrl)
+    }
+  }, [convertedUrl])
+
+  function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const selected = event.target.files?.[0]
+
+    setError('')
+    setFile(null)
+    setOriginalUrl(null)
+    setConvertedUrl(null)
+    setConvertedSize(null)
+    setElapsed(null)
+
+    if (!selected) return
+
+    if (!SUPPORTED_TYPES.has(selected.type)) {
+      setError('Choose a JPEG or PNG image.')
+      event.target.value = ''
+      return
+    }
+
+    if (selected.size > MAX_FILE_BYTES) {
+      setError('Choose an image no larger than 10 MiB.')
+      event.target.value = ''
+      return
+    }
+
+    setFile(selected)
+    setOriginalUrl(URL.createObjectURL(selected))
+  }
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!file || isConverting) return
+
+    setError('')
+    setConvertedUrl(null)
+    setConvertedSize(null)
+    setElapsed(null)
+    setIsConverting(true)
+    const startedAt = performance.now()
+
+    try {
+      const response = await fetch('/convert', {
+        method: 'POST',
+        headers: { 'content-type': file.type },
+        body: file,
+      })
+
+      if (!response.ok) {
+        const message = await response.text()
+        throw new Error(message || `Conversion failed (${response.status})`)
+      }
+
+      const blob = await response.blob()
+      setConvertedUrl(URL.createObjectURL(blob))
+      setConvertedSize(blob.size)
+      setElapsed(Math.round(performance.now() - startedAt))
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Conversion failed.')
+    } finally {
+      setIsConverting(false)
+    }
+  }
+
+  const reduction =
+    file && convertedSize !== null
+      ? ((file.size - convertedSize) / file.size) * 100
+      : null
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started with Cloudflare</h1>
-          <p>
-            Edit <code>src/App.tsx</code> or <code>worker/index.ts</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <ul style={{ display: 'flex', gap: '1rem', listStyle: 'none', padding: 0 }}>
-          <li>
-            <button
-              className="counter"
-              onClick={() => setCount((count) => count + 1)}
-            >
-              Count is {count}
-            </button>
-          </li>
-          <li>
-          <button
-            className="counter"
-            onClick={() => {
-              fetch('/api/')
-                .then((res) => res.json())
-                .then((data) => setName(data.name))
-            }}
-            aria-label='get name'
-          >
-            Name from API is: {name}
-          </button>
-          </li>
-        </ul>
+    <main className="app-shell">
+      <header className="intro">
+        <p className="eyebrow">Cloudflare Containers + FFmpeg</p>
+        <h1>Stream an image. Get a smaller WebP.</h1>
+        <p>
+          Upload a JPEG or PNG. The Worker streams it into FFmpeg, resizes it to
+          960 pixels wide, and streams the converted image back.
+        </p>
+      </header>
 
+      <form className="upload-card" onSubmit={handleSubmit}>
+        <label className="file-picker">
+          <span>{file ? 'Choose another image' : 'Choose an image'}</span>
+          <input
+            type="file"
+            accept=".jpg,.jpeg,.png,image/jpeg,image/png"
+            onChange={handleFileChange}
+            disabled={isConverting}
+          />
+        </label>
+        <p className="hint">JPEG or PNG, up to 10 MiB</p>
+        <button type="submit" disabled={!file || isConverting}>
+          {isConverting ? 'Converting…' : 'Convert to WebP'}
+        </button>
+      </form>
 
-      </section>
+      {error && <p className="error" role="alert">{error}</p>}
 
-      <div className="ticks"></div>
+      {originalUrl && file && (
+        <section className="results" aria-label="Image previews">
+          <article className="preview-card">
+            <div className="image-frame">
+              <img src={originalUrl} alt="Original upload preview" />
+            </div>
+            <div className="preview-details">
+              <h2>Original</h2>
+              <p>{formatBytes(file.size)}</p>
+            </div>
+          </article>
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-            <li>
-              <a href="https://workers.cloudflare.com/" target="_blank">
-                <img className="button-icon" src={cloudflareLogo} alt="" />
-                Workers Docs
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
+          <article className="preview-card">
+            <div className="image-frame converted-frame">
+              {convertedUrl ? (
+                <img src={convertedUrl} alt="Converted WebP preview" />
+              ) : (
+                <p>{isConverting ? 'Streaming conversion…' : 'Your WebP will appear here'}</p>
+              )}
+            </div>
+            <div className="preview-details">
+              <h2>Converted WebP</h2>
+              {convertedSize !== null && elapsed !== null ? (
+                <p>
+                  {formatBytes(convertedSize)} · {elapsed} ms ·{' '}
+                  <strong>
+                    {reduction !== null && reduction >= 0
+                      ? `${reduction.toFixed(1)}% smaller`
+                      : `${Math.abs(reduction ?? 0).toFixed(1)}% larger`}
+                  </strong>
+                </p>
+              ) : (
+                <p>960 px wide · quality 80</p>
+              )}
+            </div>
+          </article>
+        </section>
+      )}
 
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
+      <footer>
+        API: <code>POST /convert</code> with a raw JPEG or PNG request body.
+      </footer>
+    </main>
   )
 }
 
