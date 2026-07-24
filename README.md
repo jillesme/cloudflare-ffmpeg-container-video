@@ -2,7 +2,7 @@
 
 A React + Vite frontend and Cloudflare Worker that stream raw JPEG/PNG uploads through FFmpeg in a Cloudflare Container and return WebP output.
 
-> Status: deployed as a minimal reproduction of a Cloudflare Containers streaming issue. The inbound RPC stream currently disconnects when streamed into `container.exec()` while stdout is returned over the same RPC invocation.
+> Status: deployed and working. The Worker clones the incoming `Request` before passing it over RPC; without `Request.clone()`, the native request body disconnects when streamed into `container.exec()` while stdout is returned over the same RPC invocation.
 
 ## Intended request path
 
@@ -59,4 +59,4 @@ pnpm build
 pnpm deploy
 ```
 
-The intended implementation follows Cloudflare's documented `container.exec()` stdin and stdout streaming APIs. In the deployed environment, FFmpeg starts but the inbound RPC body fails with `{ retryable: true }` / `Network connection lost`, leaving no valid output.
+The implementation follows Cloudflare's documented `container.exec()` stdin and stdout streaming APIs. A direct incoming `Request` previously failed with `{ retryable: true }` / `Network connection lost`. Cloning the request before RPC, and canceling the unused tee branch, provides a compatible stream while preserving end-to-end streaming.

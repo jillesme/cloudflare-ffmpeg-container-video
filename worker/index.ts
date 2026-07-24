@@ -165,10 +165,13 @@ export default {
       return new Response("Request body required", { status: 400 });
     }
 
-    const container = getContainer(env.FFMPEG_CONTAINER, "image-converter");
+    // Cloning converts the native incoming body into a stream implementation
+    // that can cross RPC and feed container.exec(). Cancel the unused tee branch
+    // so it does not buffer the upload.
+    const clonedRequest = request.clone();
+    void request.body.cancel();
 
-    // Transfer the Request and Response together so RPC keeps both body
-    // streams attached to the same invocation for the full conversion.
-    return container.convertToWebP(request);
+    const container = getContainer(env.FFMPEG_CONTAINER, "image-converter");
+    return container.convertToWebP(clonedRequest);
   },
 } satisfies ExportedHandler<Env>;
