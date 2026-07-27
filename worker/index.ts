@@ -12,19 +12,12 @@ export class FFmpegContainer extends Container {
       return new Response("Request body required", { status: 400 });
     }
 
-    if (!this.ctx.container?.running) {
-      await this.start();
-    }
+    // start() returns immediately when the container is already running.
+    await this.start();
 
-    const runtime = this.ctx.container;
-    if (!runtime) {
-      throw new Error("Container runtime was not available");
-    }
-
-    const process = await runtime.exec(
+    const process = await this.ctx.container!.exec(
       [
         "ffmpeg",
-        "-hide_banner",
         "-loglevel",
         "error",
         "-i",
@@ -46,66 +39,24 @@ export class FFmpegContainer extends Container {
       {
         stdin: "pipe",
         stdout: "pipe",
-        stderr: "pipe",
+        // Ignore diagnostics so an unread stderr pipe cannot block FFmpeg or
+        // accidentally be combined with the binary WebP output.
+        stderr: "ignore",
       },
     );
-
-    const stdin = process.stdin;
-    const stdout = process.stdout;
-    const stderr = process.stderr;
-    if (!stdin || !stdout || !stderr) {
-      process.kill();
-      throw new Error("FFmpeg standard streams were not available");
-    }
-
-    console.log("Started FFmpeg", { pid: process.pid });
 
     // Consume the inbound RPC stream before returning from this method. RPC
     // releases argument streams when a method returns, so leaving this pump in
     // waitUntil() can disconnect FFmpeg's stdin before the upload reaches it.
     try {
-      await input.pipeTo(stdin);
-      console.log("Finished streaming input to FFmpeg", { pid: process.pid });
+      await input.pipeTo(process.stdin!);
     } catch (error) {
       console.error("FFmpeg input stream failed", { pid: process.pid, error });
       process.kill();
       throw error;
     }
 
-    // FFmpeg diagnostics must be drained so they cannot block the process. Keep
-    // only a bounded prefix for observability; binary output stays on stdout.
-    this.ctx.waitUntil(
-      (async () => {
-        const reader = stderr.getReader();
-        const decoder = new TextDecoder();
-        let diagnostics = "";
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (diagnostics.length < 4096) {
-            diagnostics += decoder.decode(value, { stream: true }).slice(
-              0,
-              4096 - diagnostics.length,
-            );
-          }
-        }
-        diagnostics += decoder.decode().slice(0, 4096 - diagnostics.length);
-
-        const exitCode = await process.exitCode;
-        console.log("FFmpeg exited", { pid: process.pid, exitCode });
-        if (diagnostics) {
-          console.error("FFmpeg diagnostics", {
-            pid: process.pid,
-            diagnostics,
-          });
-        }
-      })().catch((error: unknown) => {
-        console.error("Failed to monitor FFmpeg", { pid: process.pid, error });
-      }),
-    );
-
-    return new Response(stdout, {
+    return new Response(process.stdout, {
       headers: {
         "content-type": "image/webp",
         "cache-control": "no-store",
@@ -150,15 +101,10 @@ export default {
       return new Response("Send a raw JPEG or PNG body", { status: 415 });
     }
 
-    const contentLength = request.headers.get("content-length");
-    if (contentLength !== null) {
-      const declaredLength = Number(contentLength);
-      if (!Number.isFinite(declaredLength) || declaredLength < 0) {
-        return new Response("Invalid Content-Length", { status: 400 });
-      }
-      if (declaredLength > MAX_DECLARED_BYTES) {
-        return new Response("Image is too large", { status: 413 });
-      }
+    // Number(null) is 0 and Number("nonsense") is NaN, so both a missing and an
+    // unparseable Content-Length fall through to the streaming path.
+    if (Number(request.headers.get("content-length")) > MAX_DECLARED_BYTES) {
+      return new Response("Image is too large", { status: 413 });
     }
 
     if (!request.body) {

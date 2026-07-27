@@ -3,7 +3,9 @@ import type { ChangeEvent, FormEvent } from 'react'
 import './App.css'
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024
-const SUPPORTED_TYPES = new Set(['image/jpeg', 'image/png'])
+const SUPPORTED_TYPES = ['image/jpeg', 'image/png']
+
+type Conversion = { blob: Blob; elapsed: number }
 
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`
@@ -11,40 +13,41 @@ function formatBytes(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MiB`
 }
 
+function useObjectUrl(source: Blob | null) {
+  const [url, setUrl] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!source) {
+      setUrl(null)
+      return
+    }
+    const created = URL.createObjectURL(source)
+    setUrl(created)
+    return () => URL.revokeObjectURL(created)
+  }, [source])
+
+  return url
+}
+
 function App() {
   const [file, setFile] = useState<File | null>(null)
-  const [originalUrl, setOriginalUrl] = useState<string | null>(null)
-  const [convertedUrl, setConvertedUrl] = useState<string | null>(null)
-  const [convertedSize, setConvertedSize] = useState<number | null>(null)
-  const [elapsed, setElapsed] = useState<number | null>(null)
+  const [conversion, setConversion] = useState<Conversion | null>(null)
   const [error, setError] = useState('')
   const [isConverting, setIsConverting] = useState(false)
 
-  useEffect(() => {
-    return () => {
-      if (originalUrl) URL.revokeObjectURL(originalUrl)
-    }
-  }, [originalUrl])
-
-  useEffect(() => {
-    return () => {
-      if (convertedUrl) URL.revokeObjectURL(convertedUrl)
-    }
-  }, [convertedUrl])
+  const originalUrl = useObjectUrl(file)
+  const convertedUrl = useObjectUrl(conversion?.blob ?? null)
 
   function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
     const selected = event.target.files?.[0]
 
     setError('')
     setFile(null)
-    setOriginalUrl(null)
-    setConvertedUrl(null)
-    setConvertedSize(null)
-    setElapsed(null)
+    setConversion(null)
 
     if (!selected) return
 
-    if (!SUPPORTED_TYPES.has(selected.type)) {
+    if (!SUPPORTED_TYPES.includes(selected.type)) {
       setError('Choose a JPEG or PNG image.')
       event.target.value = ''
       return
@@ -57,7 +60,6 @@ function App() {
     }
 
     setFile(selected)
-    setOriginalUrl(URL.createObjectURL(selected))
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -65,9 +67,7 @@ function App() {
     if (!file || isConverting) return
 
     setError('')
-    setConvertedUrl(null)
-    setConvertedSize(null)
-    setElapsed(null)
+    setConversion(null)
     setIsConverting(true)
     const startedAt = performance.now()
 
@@ -83,10 +83,10 @@ function App() {
         throw new Error(message || `Conversion failed (${response.status})`)
       }
 
-      const blob = await response.blob()
-      setConvertedUrl(URL.createObjectURL(blob))
-      setConvertedSize(blob.size)
-      setElapsed(Math.round(performance.now() - startedAt))
+      setConversion({
+        blob: await response.blob(),
+        elapsed: Math.round(performance.now() - startedAt),
+      })
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Conversion failed.')
     } finally {
@@ -94,9 +94,11 @@ function App() {
     }
   }
 
-  const reduction =
-    file && convertedSize !== null
-      ? ((file.size - convertedSize) / file.size) * 100
+  const sizeChange =
+    file && conversion
+      ? `${Math.abs(((file.size - conversion.blob.size) / file.size) * 100).toFixed(1)}% ${
+          conversion.blob.size <= file.size ? 'smaller' : 'larger'
+        }`
       : null
 
   return (
@@ -150,14 +152,10 @@ function App() {
             </div>
             <div className="preview-details">
               <h2>Converted WebP</h2>
-              {convertedSize !== null && elapsed !== null ? (
+              {conversion ? (
                 <p>
-                  {formatBytes(convertedSize)} · {elapsed} ms ·{' '}
-                  <strong>
-                    {reduction !== null && reduction >= 0
-                      ? `${reduction.toFixed(1)}% smaller`
-                      : `${Math.abs(reduction ?? 0).toFixed(1)}% larger`}
-                  </strong>
+                  {formatBytes(conversion.blob.size)} · {conversion.elapsed} ms ·{' '}
+                  <strong>{sizeChange}</strong>
                 </p>
               ) : (
                 <p>960 px wide · quality 80</p>
